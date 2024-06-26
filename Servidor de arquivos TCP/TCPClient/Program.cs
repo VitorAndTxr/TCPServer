@@ -9,49 +9,86 @@ class TCPClient
 {
     private const string SERVER_IP = "127.0.0.1";
     private const int PORT = 12345;
+    private static int _connectionId = 0;
+    private static TcpClient _client = new TcpClient(SERVER_IP, PORT);
+    private static NetworkStream stream = _client.GetStream();
 
     static void Main(string[] args)
     {
-        var client = new TcpClient(SERVER_IP, PORT);
-        var stream = client.GetStream();
-        var reader = new StreamReader(stream, Encoding.UTF8);
-        var writer = new StreamWriter(stream, Encoding.UTF8) { AutoFlush = true };
-
-        while (true)
+         
+        Console.WriteLine("Conectado");
+        while (_client.Connected)
         {
+            ListenForServerMessages();
+
+            ListenConsole();
+        }
+
+    }
+
+    private static void ListenConsole()
+    {
+        var writer = new StreamWriter(stream, Encoding.UTF8) { AutoFlush = true };
+        if (Console.KeyAvailable)
+        {
+
             var message = Console.ReadLine();
 
-            if(message!= null){
+
+            if (message != null)
+            {
                 if (message.ToLower() == "sair")
                 {
-                    break;
+                    writer.WriteLine(message);
+
+                    _client.Close();
                 }
-                else if (message.StartsWith("Arquivo"))
+
+                if (message.StartsWith("File"))
                 {
                     writer.WriteLine(message);
 
                     var fileName = message.Substring(7).Trim();
-                    ReceiveFile(fileName, writer, reader, stream);
+                    ReceiveFile(fileName);
+                }
+
+                if (message.StartsWith("Chat"))
+                {
+                    writer.WriteLine(message);
                 }
 
             }
 
         }
-
-        client.Close();
     }
 
-    private static void ListenForServerMessages(StreamReader reader, StreamWriter writer, NetworkStream stream)
+    private static void ListenForServerMessages()
     {
+        var stream = _client.GetStream();
+        var reader = new StreamReader(stream, Encoding.UTF8);
+        var writer = new StreamWriter(stream, Encoding.UTF8) { AutoFlush = true };
+
         try
         {
-            while (true)
+            var teste = stream.Socket.Available;
+
+            if (teste > 3)
             {
+
                 var message = reader.ReadLine();
-                if (message == null) break;
-                if(message.StartsWith("Arquivo")){
+
+                if (message == null) return;
+
+                message = message.Replace("\uFEFF", "");
+
+                if (message.StartsWith("Connection"))
+                {
+                    _connectionId = int.Parse(message.Substring(11).Trim());
+                }
+
+                if (message.StartsWith("Arquivo")){
                     var fileName = message.Substring(7).Trim();
-                    ReceiveFile(fileName, writer, reader, stream);
+                    ReceiveFile(fileName);
                 }
                 Console.WriteLine(message);
             }
@@ -62,8 +99,11 @@ class TCPClient
         }
     }
 
-    private static void ReceiveFile(string fileName, StreamWriter writer, StreamReader reader, NetworkStream stream)
+    private static void ReceiveFile(string fileName)
     {
+        var reader = new StreamReader(stream, Encoding.UTF8);
+        var writer = new StreamWriter(stream, Encoding.UTF8) { AutoFlush = true };
+
         var status = reader.ReadLine();
         Console.WriteLine(status);
 
@@ -78,7 +118,7 @@ class TCPClient
         var name = reader.ReadLine().Substring(6);
         Console.WriteLine(name);
 
-        var sizeString = reader.ReadLine().Substring(8);
+        var sizeString = reader.ReadLine().Substring(9);
         Console.WriteLine(sizeString);
 
         if (!long.TryParse(sizeString, out long size))
@@ -90,21 +130,29 @@ class TCPClient
 
         Console.WriteLine("Hash: " + hash);
 
-        var buffer = new byte[size];
-        using (var fileStream = new FileStream($"received_{name}", FileMode.Create, FileAccess.Write))
+        using (var fileStream = new FileStream($"received_Client_{_connectionId}_{name}", FileMode.Create, FileAccess.Write))
         {
-            long totalBytesRead = 0;
-            while (totalBytesRead < size)
+            byte[] buffer = new byte[20*1024]; // 20k Budder
+            int bytesRead;
+
+            while ((bytesRead = stream.Read(buffer, 0, buffer.Length)) > 0)
             {
-                int bytesRead = stream.Read(buffer, 0, buffer.Length);
+                if (buffer[0] == 0x00 && bytesRead == 1)
+                {
+                    Console.WriteLine("Fim da transmissão detectado.");
+                    break;
+                }
                 fileStream.Write(buffer, 0, bytesRead);
-                totalBytesRead += bytesRead;
+                //Console.WriteLine($"Recebido {bytesRead} bytes");
             }
+
+            fileStream.Close();
+
         }
 
         using (var sha256 = SHA256.Create())
         {
-            using (var fileStream = File.OpenRead($"received_{name}"))
+            using (var fileStream = File.OpenRead($"received_Client_{_connectionId}_{name}"))
             {
                 var computedHash = sha256.ComputeHash(fileStream);
                 var computedHashString = BitConverter.ToString(computedHash).Replace("-", "").ToLower();
